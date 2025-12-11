@@ -43,8 +43,11 @@ export default function EditConnector() {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
-    destinations: []
+    destinations: [], // Array of objects: { type, enabled, config }
+    is_active: true
   })
+  const [destinationConfigs, setDestinationConfigs] = useState({})
+  const [showConfigModal, setShowConfigModal] = useState(null) // Destination type to show config for
   const [toast, setToast] = useState(null)
   const [copied, setCopied] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -66,11 +69,30 @@ export default function EditConnector() {
         setToast({ message: result.error, type: 'error' })
       } else if (result.data) {
         setConnector(result.data)
+        
+        // Parse destinations - handle both old format (strings) and new format (objects)
+        const destinations = (result.data.destinations || []).map(dest => {
+          if (typeof dest === 'string') {
+            return { type: dest, enabled: true, config: {} }
+          }
+          return dest
+        })
+        
+        // Extract configs for editing
+        const configs = {}
+        destinations.forEach(dest => {
+          if (dest.config) {
+            configs[dest.type] = dest.config
+          }
+        })
+        
         setFormData({
           name: result.data.name || '',
           description: result.data.description || '',
-          destinations: result.data.destinations || []
+          destinations: destinations,
+          is_active: result.data.is_active !== false
         })
+        setDestinationConfigs(configs)
       }
     } catch (error) {
       console.error('Error:', error)
@@ -87,11 +109,45 @@ export default function EditConnector() {
 
   const toggleDestination = (type) => {
     setFormData(prev => {
-      const destinations = prev.destinations.includes(type)
-        ? prev.destinations.filter(d => d !== type)
-        : [...prev.destinations, type]
+      const existingIndex = prev.destinations.findIndex(d => d.type === type)
+      let destinations
+      
+      if (existingIndex >= 0) {
+        // Remove destination
+        destinations = prev.destinations.filter((_, i) => i !== existingIndex)
+        // Remove config
+        setDestinationConfigs(prev => {
+          const newConfigs = { ...prev }
+          delete newConfigs[type]
+          return newConfigs
+        })
+      } else {
+        // Add destination with default config
+        const newDest = { type, enabled: true, config: destinationConfigs[type] || {} }
+        destinations = [...prev.destinations, newDest]
+      }
+      
       return { ...prev, destinations }
     })
+  }
+
+  const updateDestinationConfig = (type, config) => {
+    setDestinationConfigs(prev => ({
+      ...prev,
+      [type]: { ...prev[type], ...config }
+    }))
+    
+    // Also update in formData destinations
+    setFormData(prev => ({
+      ...prev,
+      destinations: prev.destinations.map(dest =>
+        dest.type === type ? { ...dest, config: { ...dest.config, ...config } } : dest
+      )
+    }))
+  }
+
+  const getSelectedDestinations = () => {
+    return formData.destinations.map(d => d.type)
   }
 
   const handleSave = async () => {
@@ -102,10 +158,25 @@ export default function EditConnector() {
 
     setSaving(true)
     try {
+      // Merge destination configs into destinations array
+      const destinationsWithConfig = formData.destinations.map(dest => ({
+        ...dest,
+        config: destinationConfigs[dest.type] || dest.config || {}
+      }))
+
+      const payload = {
+        name: formData.name,
+        description: formData.description,
+        destinations: destinationsWithConfig,
+        is_active: formData.is_active
+      }
+
+      console.log('📤 Updating connector with payload:', JSON.stringify(payload, null, 2))
+
       const response = await fetch(`/api/connectors/${params.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       })
 
       const result = await response.json()
@@ -113,11 +184,16 @@ export default function EditConnector() {
       if (result.error) {
         setToast({ message: result.error, type: 'error' })
       } else {
-        setToast({ message: 'Connector saved successfully!', type: 'success' })
+        setToast({ message: 'Connector updated successfully!', type: 'success' })
         setConnector(result.data)
+        
+        // Redirect to dashboard after 2 seconds
+        setTimeout(() => {
+          router.push('/dashboard')
+        }, 2000)
       }
     } catch (error) {
-      console.error('Error:', error)
+      console.error('❌ Error:', error)
       setToast({ message: 'Failed to save connector', type: 'error' })
     } finally {
       setSaving(false)
@@ -248,10 +324,53 @@ export default function EditConnector() {
       </header>
 
       <main className="max-w-4xl mx-auto px-6 py-12">
+        {/* Breadcrumb */}
+        <nav className="mb-6 flex items-center gap-2 text-sm text-slate-400">
+          <Link href="/dashboard" className="hover:text-white transition-colors">Dashboard</Link>
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+          <span className="text-slate-500">Edit Connector</span>
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+          <span className="text-white">{connector.name}</span>
+        </nav>
+
         {/* Title */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-white mb-2">Edit Connector</h1>
           <p className="text-slate-400">Update your connector settings and destinations</p>
+        </div>
+
+        {/* Active Status Toggle */}
+        <div className="bg-slate-800/30 rounded-2xl border border-slate-700/50 p-6 mb-8">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-white mb-1">Active Status</h3>
+              <p className="text-sm text-slate-400">
+                {formData.is_active 
+                  ? 'This connector is active and accepting submissions' 
+                  : 'This connector is inactive. Webhook will stop accepting submissions.'}
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formData.is_active}
+                onChange={(e) => {
+                  if (!e.target.checked) {
+                    if (!confirm('Are you sure you want to deactivate this connector? The webhook will stop accepting submissions.')) {
+                      return
+                    }
+                  }
+                  setFormData(prev => ({ ...prev, is_active: e.target.checked }))
+                }}
+                className="sr-only peer"
+              />
+              <div className="w-14 h-7 bg-slate-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-500/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[4px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-indigo-600 peer-checked:to-purple-600"></div>
+            </label>
+          </div>
         </div>
 
         {/* Webhook URL Card */}
@@ -324,16 +443,33 @@ export default function EditConnector() {
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {destinations.map((dest) => (
-              <DestinationCard
-                key={dest.type}
-                type={dest.type}
-                title={dest.title}
-                description={dest.description}
-                selected={formData.destinations.includes(dest.type)}
-                onClick={() => toggleDestination(dest.type)}
-              />
-            ))}
+            {destinations.map((dest) => {
+              const isSelected = getSelectedDestinations().includes(dest.type)
+              const hasConfig = isSelected && destinationConfigs[dest.type] && Object.keys(destinationConfigs[dest.type]).length > 0
+              
+              return (
+                <div key={dest.type} className="relative">
+                  <DestinationCard
+                    type={dest.type}
+                    title={dest.title}
+                    description={dest.description}
+                    selected={isSelected}
+                    onClick={() => toggleDestination(dest.type)}
+                  />
+                  {isSelected && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setShowConfigModal(dest.type)
+                      }}
+                      className="absolute top-2 right-2 px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white rounded-lg text-xs font-medium transition-colors flex items-center gap-1"
+                    >
+                      {hasConfig ? '⚙️ Configured' : '⚙️ Configure'}
+                    </button>
+                  )}
+                </div>
+              )
+            })}
           </div>
 
           {formData.destinations.length > 0 && (
@@ -343,6 +479,110 @@ export default function EditConnector() {
               </p>
             </div>
           )}
+        </div>
+
+        {/* Destination Configuration Modal */}
+        {showConfigModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowConfigModal(null)} />
+            <div className="relative bg-slate-800 rounded-2xl border border-slate-700 p-8 max-w-2xl w-full shadow-2xl max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-semibold text-white">
+                  Configure {destinations.find(d => d.type === showConfigModal)?.title}
+                </h3>
+                <button
+                  onClick={() => setShowConfigModal(null)}
+                  className="text-slate-400 hover:text-white transition-colors"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Google Sheets Configuration */}
+              {showConfigModal === 'sheets' && (
+                <div className="space-y-4">
+                  <div>
+                    <label htmlFor="edit-spreadsheetId" className="block text-sm font-medium text-slate-300 mb-2">
+                      Spreadsheet ID <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      id="edit-spreadsheetId"
+                      value={destinationConfigs.sheets?.spreadsheetId || ''}
+                      onChange={(e) => updateDestinationConfig('sheets', { spreadsheetId: e.target.value })}
+                      placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
+                      className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                    />
+                    <p className="text-xs text-slate-500 mt-2">
+                      Find this in your Google Sheet URL
+                    </p>
+                  </div>
+
+                  <div>
+                    <label htmlFor="edit-sheetName" className="block text-sm font-medium text-slate-300 mb-2">
+                      Sheet Name <span className="text-slate-500">(Optional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      id="edit-sheetName"
+                      value={destinationConfigs.sheets?.sheetName || 'Form Submissions'}
+                      onChange={(e) => updateDestinationConfig('sheets', { sheetName: e.target.value || 'Form Submissions' })}
+                      placeholder="Form Submissions"
+                      className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Slack Configuration */}
+              {showConfigModal === 'slack' && (
+                <div className="space-y-4">
+                  <div>
+                    <label htmlFor="edit-slackWebhookUrl" className="block text-sm font-medium text-slate-300 mb-2">
+                      Webhook URL <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="url"
+                      id="edit-slackWebhookUrl"
+                      value={destinationConfigs.slack?.webhookUrl || ''}
+                      onChange={(e) => updateDestinationConfig('slack', { webhookUrl: e.target.value })}
+                      placeholder="Enter your Slack webhook URL"
+                      className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                    />
+                    <p className="text-xs text-slate-500 mt-2">
+                      Get your webhook URL from Slack → Apps → Incoming Webhooks
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Email Configuration - placeholder */}
+              {showConfigModal === 'email' && (
+                <div className="text-center py-8">
+                  <p className="text-slate-400">Email configuration will be added soon</p>
+                </div>
+              )}
+
+              {/* Other destinations - placeholder */}
+              {!['sheets', 'slack', 'email'].includes(showConfigModal) && (
+                <div className="text-center py-8">
+                  <p className="text-slate-400">Configuration for this destination type coming soon</p>
+                </div>
+              )}
+
+              <div className="mt-6 flex justify-end">
+                <button
+                  onClick={() => setShowConfigModal(null)}
+                  className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-xl transition-colors"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         </div>
       </main>
 

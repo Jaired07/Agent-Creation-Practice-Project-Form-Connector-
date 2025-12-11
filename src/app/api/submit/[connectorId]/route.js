@@ -1,12 +1,76 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import sgMail from '@sendgrid/mail';
+import { rateLimit } from '@/lib/rateLimit';
+import { validateSubmission } from '@/lib/validation';
+import { destinationHandlers } from '@/lib/destinations';
+import {
+  createRateLimitError,
+  createValidationError,
+  createNotFoundError,
+  createErrorResponse
+} from '@/lib/apiErrors';
 
-// Initialize SendGrid with API key
-if (process.env.SENDGRID_API_KEY) {
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-}
-
+/**
+ * Processes a form submission and routes it to configured destinations
+ * 
+ * This endpoint handles form submissions by:
+ * 1. Validating rate limits (100 requests per hour per connector)
+ * 2. Validating input data (size, field count, types, lengths)
+ * 3. Fetching the connector configuration from the database
+ * 4. Checking if the connector is active
+ * 5. Storing the submission in the database
+ * 6. Processing all enabled destinations (email, slack, sms, sheets, webhook)
+ * 7. Updating the submission with processing results
+ * 
+ * **Security Features:**
+ * - Rate limiting per connector ID
+ * - Input validation (payload size, field count, types, string lengths)
+ * - Connector active status check
+ * - HTML escaping to prevent XSS attacks
+ * 
+ * **Request Format:**
+ * POST /api/submit/{connectorId}
+ * Content-Type: application/json
+ * 
+ * Body: { "field1": "value1", "field2": "value2", ... }
+ * 
+ * **Response Format:**
+ * Success (200):
+ * {
+ *   success: true,
+ *   submissionId: "uuid",
+ *   results: {
+ *     email: { success: true },
+ *     slack: { success: false, error: "...", timestamp: "..." }
+ *   }
+ * }
+ * 
+ * Error (400/403/404/429/500):
+ * {
+ *   error: "User-friendly message",
+ *   code: "ERROR_CODE",
+ *   timestamp: "ISO timestamp",
+ *   ...additional fields
+ * }
+ * 
+ * @param {Request} request - Next.js request object containing form submission data
+ * @param {Object} context - Next.js route context
+ * @param {Object} context.params - Route parameters (must be awaited in Next.js 15+)
+ * @param {string} context.params.connectorId - UUID of the connector to submit to
+ * @returns {Promise<NextResponse>} JSON response with submission results or error details
+ * @throws {Error} If request parsing fails or unexpected errors occur
+ * 
+ * @example
+ * // POST /api/submit/abc-123-def-456
+ * // Body: { "name": "John Doe", "email": "john@example.com", "message": "Hello" }
+ * // 
+ * // Response:
+ * // {
+ * //   success: true,
+ * //   submissionId: "sub-789",
+ * //   results: { email: { success: true } }
+ * // }
+ */
 export async function POST(request, context) {
   try {
     // In Next.js 15+, params must be awaited
@@ -15,6 +79,23 @@ export async function POST(request, context) {
 
     console.log('📥 Received submission for connector:', connectorId);
     console.log('📋 Form data:', formData);
+
+    // SECURITY CHECK 1: Rate limiting
+    const rateLimitResult = rateLimit(connectorId, 100, 3600000); // 100 requests per hour
+    if (!rateLimitResult.allowed) {
+      console.log('🚫 Rate limit exceeded for connector:', connectorId);
+      return createRateLimitError(rateLimitResult.resetTime, rateLimitResult.remaining);
+    }
+    console.log('✅ Rate limit check passed');
+
+    // SECURITY CHECK 2: Input validation
+    try {
+      validateSubmission(formData);
+      console.log('✅ Input validation passed');
+    } catch (validationError) {
+      console.error('❌ Input validation failed:', validationError.message);
+      return createValidationError(validationError.message);
+    }
 
     // 1. Look up the connector
     const { data: connector, error: connectorError } = await supabase
@@ -25,13 +106,21 @@ export async function POST(request, context) {
 
     if (connectorError || !connector) {
       console.error('❌ Connector not found:', connectorError);
-      return NextResponse.json(
-        { error: 'Connector not found', details: connectorError?.message },
-        { status: 404 }
-      );
+      return createNotFoundError('Connector');
     }
 
     console.log('✅ Connector found:', connector.name);
+
+    // SECURITY CHECK 3: Connector active status check
+    if (connector.is_active !== true) {
+      console.log('🚫 Connector is not active:', connectorId);
+      return createErrorResponse(
+        'This connector is currently inactive',
+        'CONNECTOR_INACTIVE',
+        403
+      );
+    }
+    console.log('✅ Connector is active');
 
     // 3. Store submission in database
     const { data: submission, error: submissionError } = await supabase
@@ -47,9 +136,11 @@ export async function POST(request, context) {
 
     if (submissionError) {
       console.error('❌ Error storing submission:', submissionError);
-      return NextResponse.json(
-        { error: 'Failed to store submission', details: submissionError.message },
-        { status: 500 }
+      return createErrorResponse(
+        'Failed to store submission',
+        'SUBMISSION_STORAGE_ERROR',
+        500,
+        { details: submissionError.message }
       );
     }
 
@@ -74,25 +165,32 @@ export async function POST(request, context) {
     console.log('🔍 Processing destinations:', JSON.stringify(flatDestinations, null, 2));
 
     for (const destination of flatDestinations) {
-      console.log('🔍 Processing destination:', JSON.stringify(destination, null, 2));
-      console.log('🔍 Type:', destination.type, 'Enabled:', destination.enabled);
+      const handler = destinationHandlers[destination.type];
       
-      if (destination.type === 'email' && destination.enabled) {
-        console.log('📧 Attempting to send email...');
-        try {
-          await sendEmail(destination, formData, connector);
-          results.email = { success: true };
-          console.log('✅ Email sent successfully');
-        } catch (error) {
-          results.email = { success: false, error: error.message };
-          console.error('❌ Email error:', error.message);
-          console.error('❌ Full error:', error);
-        }
-      } else {
-        console.log('⏭️  Skipping destination (not email or not enabled)');
+      if (!handler) {
+        console.log(`⚠️  Unknown destination type: ${destination.type}`);
+        continue;
       }
-
-      // TODO: Add other destination types (Sheets, Slack, SMS, Webhook)
+      
+      if (!destination.enabled) {
+        console.log(`⏭️  Skipping disabled destination: ${destination.type}`);
+        continue;
+      }
+      
+      console.log(`🔄 Processing ${destination.type} destination...`);
+      
+      try {
+        await handler(destination, formData, connector);
+        results[destination.type] = { success: true };
+        console.log(`✅ ${destination.type} processed successfully`);
+      } catch (error) {
+        results[destination.type] = { 
+          success: false, 
+          error: error.message,
+          timestamp: new Date().toISOString()
+        };
+        console.error(`❌ ${destination.type} failed:`, error.message);
+      }
     }
 
     // 5. Update submission with results
@@ -114,119 +212,31 @@ export async function POST(request, context) {
 
   } catch (error) {
     console.error('❌ Unexpected error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error', details: error.message },
-      { status: 500 }
+    return createErrorResponse(
+      'Internal server error',
+      'INTERNAL_SERVER_ERROR',
+      500,
+      { details: error.message }
     );
   }
 }
 
-// Helper function to escape HTML to prevent XSS
-function escapeHtml(text) {
-  if (text == null) return '';
-  const map = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;'
-  };
-  return String(text).replace(/[&<>"']/g, m => map[m]);
-}
-
-// Helper function to send email via SendGrid
-async function sendEmail(destination, formData, connector) {
-  console.log('📧 sendEmail called with destination:', JSON.stringify(destination, null, 2));
-  
-  if (!process.env.SENDGRID_API_KEY) {
-    throw new Error('SendGrid API key not configured');
-  }
-
-  const config = destination.config || {};
-  console.log('📧 Email config:', JSON.stringify(config, null, 2));
-  
-  // Escape connector name to prevent HTML injection
-  const safeConnectorName = escapeHtml(connector.name);
-  
-  // Build email content
-  let htmlContent = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center;">
-        <h1 style="color: white; margin: 0;">📋 New Form Submission</h1>
-      </div>
-      
-      <div style="background: #f9f9f9; padding: 30px;">
-        <p style="color: #666; margin-bottom: 20px;">
-          You received a new submission from: <strong>${safeConnectorName}</strong>
-        </p>
-        
-        <div style="background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-  `;
-
-  // Add form fields with HTML escaping
-  Object.entries(formData).forEach(([key, value]) => {
-    const label = escapeHtml(key.charAt(0).toUpperCase() + key.slice(1));
-    const safeValue = escapeHtml(value);
-    htmlContent += `
-      <div style="margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 15px;">
-        <strong style="color: #667eea; display: block; margin-bottom: 5px;">
-          ${label}:
-        </strong>
-        <span style="color: #333;">
-          ${safeValue || '(empty)'}
-        </span>
-      </div>
-    `;
-  });
-
-  htmlContent += `
-        </div>
-        
-        <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107;">
-          <p style="margin: 0; color: #856404; font-size: 14px;">
-            📊 This submission was logged in your Form Connector dashboard.
-          </p>
-        </div>
-      </div>
-      
-      <div style="background: #333; padding: 20px; text-align: center;">
-        <p style="color: #999; margin: 0; font-size: 12px;">
-          Powered by Form-to-Everything Connector
-        </p>
-      </div>
-    </div>
-  `;
-
-  // Plain text version (no escaping needed for plain text)
-  let textContent = `New Form Submission from ${connector.name}\n\n`;
-  Object.entries(formData).forEach(([key, value]) => {
-    const label = key.charAt(0).toUpperCase() + key.slice(1);
-    textContent += `${label}: ${value || '(empty)'}\n`;
-  });
-
-  // Send email
-  const msg = {
-    to: config.to_email || config.toEmail,
-    from: {
-      email: config.from_email || config.fromEmail,
-      name: config.from_name || config.fromName || 'Form Connector'
-    },
-    subject: config.subject || `New Form Submission - ${safeConnectorName}`,
-    text: textContent,
-    html: htmlContent
-  };
-
-  console.log('📧 Sending email with config:', JSON.stringify({
-    to: msg.to,
-    from: msg.from,
-    subject: msg.subject
-  }, null, 2));
-  
-  await sgMail.send(msg);
-  console.log('📧 SendGrid send() completed');
-}
-
-// Handle OPTIONS for CORS
+/**
+ * Handles CORS preflight requests
+ * 
+ * This function responds to OPTIONS requests with appropriate CORS headers
+ * to allow cross-origin requests from web forms. It enables:
+ * - All origins (*)
+ * - Common HTTP methods (GET, POST, PUT, DELETE, OPTIONS)
+ * - Content-Type and Authorization headers
+ * 
+ * @param {Request} request - Next.js request object (unused but required by Next.js)
+ * @returns {NextResponse} Response with CORS headers and 200 status
+ * 
+ * @example
+ * // OPTIONS /api/submit/abc-123
+ * // Response: 200 OK with CORS headers
+ */
 export async function OPTIONS(request) {
   return new NextResponse(null, {
     status: 200,

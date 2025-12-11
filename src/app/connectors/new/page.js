@@ -40,8 +40,9 @@ export default function NewConnector() {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
-    destinations: []
+    destinations: [] // Array of objects: { type, enabled, config }
   })
+  const [destinationConfigs, setDestinationConfigs] = useState({}) // Store configs per destination type
   const [loading, setLoading] = useState(false)
   const [createdConnector, setCreatedConnector] = useState(null)
   const [toast, setToast] = useState(null)
@@ -54,18 +55,68 @@ export default function NewConnector() {
 
   const toggleDestination = (type) => {
     setFormData(prev => {
-      const destinations = prev.destinations.includes(type)
-        ? prev.destinations.filter(d => d !== type)
-        : [...prev.destinations, type]
+      const existingIndex = prev.destinations.findIndex(d => d.type === type)
+      let destinations
+      
+      if (existingIndex >= 0) {
+        // Remove destination
+        destinations = prev.destinations.filter((_, i) => i !== existingIndex)
+        // Remove config
+        setDestinationConfigs(prev => {
+          const newConfigs = { ...prev }
+          delete newConfigs[type]
+          return newConfigs
+        })
+      } else {
+        // Add destination with default config
+        const newDest = { type, enabled: true, config: {} }
+        destinations = [...prev.destinations, newDest]
+      }
+      
       return { ...prev, destinations }
     })
+  }
+
+  const updateDestinationConfig = (type, config) => {
+    setDestinationConfigs(prev => ({
+      ...prev,
+      [type]: { ...prev[type], ...config }
+    }))
   }
 
   const handleNext = () => {
     if (step === 1 && formData.name.trim()) {
       setStep(2)
     } else if (step === 2) {
+      // Check if any destinations need configuration
+      const needsConfig = formData.destinations.some(dest => {
+        if (dest.type === 'sheets') {
+          return !destinationConfigs.sheets?.spreadsheetId
+        }
+        if (dest.type === 'email') {
+          return !destinationConfigs.email?.to_email && !destinationConfigs.email?.toEmail
+        }
+        if (dest.type === 'slack') {
+          return !destinationConfigs.slack?.webhookUrl
+        }
+        return false
+      })
+
+      if (needsConfig) {
+        setStep(2.5) // Configuration step
+      } else {
+        handleSubmit()
+      }
+    } else if (step === 2.5) {
       handleSubmit()
+    }
+  }
+
+  const handleBack = () => {
+    if (step === 2.5) {
+      setStep(2)
+    } else if (step === 2) {
+      setStep(1)
     }
   }
 
@@ -74,10 +125,23 @@ export default function NewConnector() {
 
     setLoading(true)
     try {
+      // Merge destination configs into destinations array
+      const destinationsWithConfig = formData.destinations.map(dest => ({
+        ...dest,
+        config: destinationConfigs[dest.type] || {}
+      }))
+
+      const payload = {
+        ...formData,
+        destinations: destinationsWithConfig
+      }
+
+      console.log('📤 Submitting connector with destinations:', JSON.stringify(payload, null, 2))
+
       const response = await fetch('/api/connectors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       })
 
       const result = await response.json()
@@ -91,7 +155,7 @@ export default function NewConnector() {
         setLoading(false)
       }
     } catch (error) {
-      console.error('Error:', error)
+      console.error('❌ Error:', error)
       setToast({ message: 'Failed to create connector', type: 'error' })
       setLoading(false)
     }
@@ -109,8 +173,13 @@ export default function NewConnector() {
   const steps = [
     { number: 1, name: 'Details', description: 'Name your connector' },
     { number: 2, name: 'Destinations', description: 'Choose where to send data' },
+    { number: 2.5, name: 'Configure', description: 'Configure destinations' },
     { number: 3, name: 'Complete', description: 'Get your webhook URL' },
   ]
+
+  const getSelectedDestinations = () => {
+    return formData.destinations.map(d => d.type)
+  }
 
   return (
     <div className="min-h-screen bg-[#0f172a]">
@@ -142,7 +211,7 @@ export default function NewConnector() {
             <div className="absolute top-6 left-0 right-0 h-0.5 bg-slate-700" />
             <div 
               className="absolute top-6 left-0 h-0.5 bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-500"
-              style={{ width: `${((step - 1) / 2) * 100}%` }}
+              style={{ width: step === 2.5 ? '66%' : `${((step - 1) / 2) * 100}%` }}
             />
             
             {steps.map((s, index) => (
@@ -247,7 +316,7 @@ export default function NewConnector() {
                       type={dest.type}
                       title={dest.title}
                       description={dest.description}
-                      selected={formData.destinations.includes(dest.type)}
+                      selected={getSelectedDestinations().includes(dest.type)}
                       onClick={() => toggleDestination(dest.type)}
                     />
                   </div>
@@ -264,7 +333,7 @@ export default function NewConnector() {
 
               <div className="flex justify-between">
                 <button
-                  onClick={() => setStep(1)}
+                  onClick={handleBack}
                   className="flex items-center gap-2 px-5 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded-xl transition-colors"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -274,7 +343,168 @@ export default function NewConnector() {
                 </button>
                 <button
                   onClick={handleNext}
-                  disabled={loading}
+                  disabled={loading || formData.destinations.length === 0}
+                  className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-medium rounded-xl hover:from-indigo-500 hover:to-purple-500 transition-all shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40 disabled:opacity-50"
+                >
+                  Continue
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 2.5: Destination Configuration */}
+          {step === 2.5 && (
+            <div className="bg-slate-800/30 rounded-3xl border border-slate-700/50 p-8">
+              <div className="mb-8">
+                <h2 className="text-xl font-semibold text-white mb-2">Configure Destinations</h2>
+                <p className="text-slate-400">Set up your selected destinations</p>
+              </div>
+
+              <div className="space-y-6">
+                {/* Google Sheets Configuration */}
+                {getSelectedDestinations().includes('sheets') && (
+                  <div className="bg-slate-900/50 rounded-2xl border border-slate-700/50 p-6">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-green-600 flex items-center justify-center">
+                        <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-semibold text-white">Google Sheets</h3>
+                        <p className="text-sm text-slate-400">Configure your spreadsheet settings</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div>
+                        <label htmlFor="spreadsheetId" className="block text-sm font-medium text-slate-300 mb-2">
+                          Spreadsheet ID <span className="text-red-400">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          id="spreadsheetId"
+                          value={destinationConfigs.sheets?.spreadsheetId || ''}
+                          onChange={(e) => updateDestinationConfig('sheets', { spreadsheetId: e.target.value })}
+                          placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
+                          className="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                        />
+                        <p className="text-xs text-slate-500 mt-2">
+                          Find this in your Google Sheet URL: <code className="text-emerald-400">docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit</code>
+                        </p>
+                        <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+                          <p className="text-xs text-blue-400">
+                            <strong className="text-blue-300">Important:</strong> Make sure to share your spreadsheet with the service account email 
+                            (found in GOOGLE_SERVICE_ACCOUNT_JSON as "client_email") and give it Editor permissions.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label htmlFor="sheetName" className="block text-sm font-medium text-slate-300 mb-2">
+                          Sheet Name <span className="text-slate-500">(Optional)</span>
+                        </label>
+                        <input
+                          type="text"
+                          id="sheetName"
+                          value={destinationConfigs.sheets?.sheetName || 'Form Submissions'}
+                          onChange={(e) => updateDestinationConfig('sheets', { sheetName: e.target.value || 'Form Submissions' })}
+                          placeholder="Form Submissions"
+                          className="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                        />
+                        <p className="text-xs text-slate-500 mt-2">
+                          Name of the sheet tab. Defaults to "Form Submissions" if left empty.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Email Configuration - placeholder for now */}
+                {getSelectedDestinations().includes('email') && (
+                  <div className="bg-slate-900/50 rounded-2xl border border-slate-700/50 p-6">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-rose-500 to-pink-600 flex items-center justify-center">
+                        <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-semibold text-white">Email</h3>
+                        <p className="text-sm text-slate-400">Email configuration will be added in connector settings</p>
+                      </div>
+                    </div>
+                    <p className="text-sm text-slate-400">You can configure email settings after creating the connector.</p>
+                  </div>
+                )}
+
+                {/* Slack Configuration */}
+                {getSelectedDestinations().includes('slack') && (
+                  <div className="bg-slate-900/50 rounded-2xl border border-slate-700/50 p-6">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-violet-600 flex items-center justify-center">
+                        <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z"/>
+                        </svg>
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-semibold text-white">Slack</h3>
+                        <p className="text-sm text-slate-400">Configure your Slack webhook</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div>
+                        <label htmlFor="slackWebhookUrl" className="block text-sm font-medium text-slate-300 mb-2">
+                          Webhook URL <span className="text-red-400">*</span>
+                        </label>
+                        <input
+                          type="url"
+                          id="slackWebhookUrl"
+                          value={destinationConfigs.slack?.webhookUrl || ''}
+                          onChange={(e) => updateDestinationConfig('slack', { webhookUrl: e.target.value })}
+                          placeholder="Enter your Slack webhook URL"
+                          className="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                        />
+                        <p className="text-xs text-slate-500 mt-2">
+                          Get your webhook URL from Slack → Apps → Incoming Webhooks
+                        </p>
+                        <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+                          <p className="text-xs text-blue-400">
+                            <strong className="text-blue-300">How to get webhook URL:</strong>
+                          </p>
+                          <ol className="text-xs text-blue-400/80 mt-2 ml-4 list-decimal space-y-1">
+                            <li>Go to <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer" className="underline">api.slack.com/apps</a></li>
+                            <li>Create a new app or select existing one</li>
+                            <li>Go to "Incoming Webhooks" → Activate</li>
+                            <li>Add webhook to workspace → Select channel</li>
+                            <li>Copy the webhook URL</li>
+                          </ol>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-between mt-8">
+                <button
+                  onClick={handleBack}
+                  className="flex items-center gap-2 px-5 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded-xl transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                  </svg>
+                  Back
+                </button>
+                <button
+                  onClick={handleNext}
+                  disabled={loading || 
+                    (getSelectedDestinations().includes('sheets') && !destinationConfigs.sheets?.spreadsheetId) ||
+                    (getSelectedDestinations().includes('slack') && !destinationConfigs.slack?.webhookUrl)}
                   className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-medium rounded-xl hover:from-indigo-500 hover:to-purple-500 transition-all shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40 disabled:opacity-50"
                 >
                   {loading ? (

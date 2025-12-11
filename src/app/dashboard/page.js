@@ -2,19 +2,46 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useUser } from '@clerk/nextjs'
+import { useRouter } from 'next/navigation'
+import { UserButton } from '@clerk/nextjs'
 import Sidebar from '@/components/Sidebar'
 import ConnectorCard from '@/components/ConnectorCard'
 import Toast from '@/components/Toast'
 
+/**
+ * Dashboard page component
+ * 
+ * Displays user's connectors with statistics and management options.
+ * Requires authentication - redirects to sign-in if not authenticated.
+ * 
+ * Features:
+ * - Shows total connectors, submissions, and active destinations
+ * - Lists all connectors owned by the current user
+ * - Allows creating new connectors
+ * - User profile button in header
+ */
 export default function Dashboard() {
+  const { user, isLoaded } = useUser()
+  const router = useRouter()
   const [connectors, setConnectors] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [toast, setToast] = useState(null)
 
+  // Redirect to sign-in if not authenticated
   useEffect(() => {
-    fetchConnectors()
-  }, [])
+    if (isLoaded && !user) {
+      console.log('🔒 No user found, redirecting to sign-in')
+      router.push('/sign-in')
+    }
+  }, [isLoaded, user, router])
+
+  useEffect(() => {
+    if (user) {
+      fetchConnectors()
+    }
+  }, [user])
 
   const fetchConnectors = async () => {
     try {
@@ -87,6 +114,23 @@ export default function Dashboard() {
     },
   ]
 
+  // Show loading state while checking authentication
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-[#0f172a] flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-slate-400">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Don't render if not authenticated (redirect will happen)
+  if (!user) {
+    return null
+  }
+
   return (
     <div className="min-h-screen bg-[#0f172a]">
       <Sidebar />
@@ -116,6 +160,18 @@ export default function Dashboard() {
                   </svg>
                   Refresh
                 </button>
+                {user && (
+                  <div className="flex items-center">
+                    <UserButton 
+                      afterSignOutUrl="/sign-in"
+                      appearance={{
+                        elements: {
+                          avatarBox: "w-10 h-10",
+                        },
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           </div>
