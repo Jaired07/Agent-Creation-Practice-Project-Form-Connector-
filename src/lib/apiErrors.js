@@ -5,10 +5,13 @@ import { NextResponse } from 'next/server';
  * 
  * This module provides standardized error response creation functions
  * to ensure consistent error formatting across all API endpoints.
- * All error responses include:
+ * All error responses follow the same structure as success responses:
+ * - data: Always null for error responses (consistent with success format)
  * - error: User-friendly error message
  * - code: Machine-readable error code
  * - timestamp: ISO timestamp of when the error occurred
+ * 
+ * This ensures clients can always check `response.data` regardless of success/error.
  */
 
 /**
@@ -16,6 +19,7 @@ import { NextResponse } from 'next/server';
  * 
  * Returns a NextResponse with a consistent error format that includes
  * user-friendly messages, machine-readable codes, and timestamps.
+ * Includes `data: null` to maintain consistency with success responses.
  * 
  * @param {string} error - User-friendly error message
  * @param {string} code - Machine-readable error code (e.g., 'VALIDATION_ERROR')
@@ -30,10 +34,12 @@ import { NextResponse } from 'next/server';
  *   400,
  *   { field: 'email' }
  * );
+ * // Returns: { data: null, error: 'Invalid input provided', code: 'VALIDATION_ERROR', field: 'email', timestamp: '...' }
  */
 export function createErrorResponse(error, code, status = 500, additionalFields = {}) {
   return NextResponse.json(
     {
+      data: null,
       error,
       code,
       timestamp: new Date().toISOString(),
@@ -55,10 +61,11 @@ export function createErrorResponse(error, code, status = 500, additionalFields 
  * 
  * @example
  * return createValidationError('Email is required', 'email');
- * // Returns: { error: 'Email is required', code: 'VALIDATION_ERROR', field: 'email', timestamp: '...' }
+ * // Returns: { data: null, error: 'Email is required', code: 'VALIDATION_ERROR', field: 'email', timestamp: '...' }
  */
 export function createValidationError(message, field = null) {
   const response = {
+    data: null,
     error: message,
     code: 'VALIDATION_ERROR',
     timestamp: new Date().toISOString()
@@ -84,11 +91,12 @@ export function createValidationError(message, field = null) {
  * 
  * @example
  * return createRateLimitError(Date.now() + 3600000, 0);
- * // Returns: { error: '...', code: 'RATE_LIMIT_EXCEEDED', resetTime: ..., remaining: 0, timestamp: '...' }
+ * // Returns: { data: null, error: '...', code: 'RATE_LIMIT_EXCEEDED', resetTime: ..., remaining: 0, timestamp: '...' }
  */
 export function createRateLimitError(resetTime, remaining = 0) {
   return NextResponse.json(
     {
+      data: null,
       error: 'Rate limit exceeded. Please try again later.',
       code: 'RATE_LIMIT_EXCEEDED',
       timestamp: new Date().toISOString(),
@@ -109,16 +117,41 @@ export function createRateLimitError(resetTime, remaining = 0) {
  * 
  * @example
  * return createNotFoundError('Connector');
- * // Returns: { error: 'Connector not found', code: 'NOT_FOUND', timestamp: '...' }
+ * // Returns: { data: null, error: 'Connector not found', code: 'NOT_FOUND', timestamp: '...' }
  */
 export function createNotFoundError(resource = 'Resource') {
   return NextResponse.json(
     {
+      data: null,
       error: `${resource} not found`,
       code: 'NOT_FOUND',
       timestamp: new Date().toISOString()
     },
     { status: 404 }
+  );
+}
+
+/**
+ * Creates an unauthorized error response (401 Unauthorized)
+ * 
+ * Used when authentication is required but not provided or invalid.
+ * 
+ * @param {string} [message='Unauthorized'] - Custom error message
+ * @returns {NextResponse} Next.js response with 401 status
+ * 
+ * @example
+ * return createUnauthorizedError();
+ * // Returns: { data: null, error: 'Unauthorized', code: 'UNAUTHORIZED', timestamp: '...' }
+ */
+export function createUnauthorizedError(message = 'Unauthorized') {
+  return NextResponse.json(
+    {
+      data: null,
+      error: message,
+      code: 'UNAUTHORIZED',
+      timestamp: new Date().toISOString()
+    },
+    { status: 401 }
   );
 }
 

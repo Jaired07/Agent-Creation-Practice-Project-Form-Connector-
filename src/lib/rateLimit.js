@@ -71,7 +71,8 @@ export function rateLimit(identifier, maxRequests = 100, windowMs = 3600000) {
   }
 
   // Calculate remaining requests
-  const remaining = Math.max(0, maxRequests - requestCount - (allowed ? 0 : 1));
+  // Use validTimestamps.length which includes the current request if it was allowed
+  const remaining = Math.max(0, maxRequests - validTimestamps.length);
   
   // Calculate reset time (oldest timestamp + window duration)
   const oldestTimestamp = validTimestamps.length > 0 
@@ -91,7 +92,7 @@ export function rateLimit(identifier, maxRequests = 100, windowMs = 3600000) {
   };
 
   console.log(
-    `🚦 Rate limit check for "${identifier}": ${requestCount + (allowed ? 1 : 0)}/${maxRequests} requests, ` +
+    `🚦 Rate limit check for "${identifier}": ${validTimestamps.length}/${maxRequests} requests, ` +
     `${remaining} remaining, reset at ${new Date(resetTime).toISOString()}`
   );
 
@@ -172,4 +173,3 @@ export function getRateLimitStatus(identifier, maxRequests = 100, windowMs = 360
     resetTime
   };
 }
-

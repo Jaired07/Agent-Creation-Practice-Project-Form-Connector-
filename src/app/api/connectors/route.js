@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
 import { supabase } from '@/lib/supabase'
 import { randomUUID } from 'crypto'
+import { requireAuth } from '@/lib/auth'
+import { createErrorResponse, createValidationError } from '@/lib/apiErrors'
 
 /**
  * GET all connectors for the authenticated user
@@ -14,15 +15,11 @@ import { randomUUID } from 'crypto'
 export async function GET() {
   try {
     // Get authenticated user ID
-    const { userId } = await auth()
-    
-    if (!userId) {
-      console.log('🔒 Unauthorized: No user ID found')
-      return NextResponse.json(
-        { data: [], error: 'Unauthorized' },
-        { status: 401 }
-      )
+    const authResult = await requireAuth()
+    if (!('userId' in authResult)) {
+      return authResult // Return unauthorized error response
     }
+    const { userId } = authResult
 
     console.log(`📊 Fetching connectors for user: ${userId}`)
 
@@ -55,9 +52,11 @@ export async function GET() {
     return NextResponse.json({ data: connectors, error: null })
   } catch (error) {
     console.error('❌ GET connectors error:', error)
-    return NextResponse.json(
-      { data: [], error: error.message },
-      { status: 500 }
+    return createErrorResponse(
+      'Failed to fetch connectors',
+      'FETCH_ERROR',
+      500,
+      { details: error.message }
     )
   }
 }
@@ -74,24 +73,17 @@ export async function GET() {
 export async function POST(request) {
   try {
     // Get authenticated user ID
-    const { userId } = await auth()
-    
-    if (!userId) {
-      console.log('🔒 Unauthorized: No user ID found')
-      return NextResponse.json(
-        { data: null, error: 'Unauthorized' },
-        { status: 401 }
-      )
+    const authResult = await requireAuth()
+    if (!('userId' in authResult)) {
+      return authResult // Return unauthorized error response
     }
+    const { userId } = authResult
 
     const body = await request.json()
     const { name, description, destinations } = body
 
     if (!name) {
-      return NextResponse.json(
-        { data: null, error: 'Name is required' },
-        { status: 400 }
-      )
+      return createValidationError('Name is required', 'name')
     }
 
     console.log(`📝 Creating connector "${name}" for user: ${userId}`)
@@ -134,12 +126,10 @@ export async function POST(request) {
 
     // Handle schema cache errors with helpful message
     if (error && error.message && error.message.includes('schema cache')) {
-      return NextResponse.json(
-        { 
-          data: null, 
-          error: 'Database schema cache error. Please run setup-supabase-complete.sql in your Supabase SQL Editor, then restart your Supabase project (Settings → General → Restart Project).' 
-        },
-        { status: 500 }
+      return createErrorResponse(
+        'Database schema cache error. Please run setup-supabase-complete.sql in your Supabase SQL Editor, then restart your Supabase project (Settings → General → Restart Project).',
+        'SCHEMA_CACHE_ERROR',
+        500
       )
     }
 
@@ -148,9 +138,11 @@ export async function POST(request) {
     return NextResponse.json({ data, error: null }, { status: 201 })
   } catch (error) {
     console.error('POST connector error:', error)
-    return NextResponse.json(
-      { data: null, error: error.message },
-      { status: 500 }
+    return createErrorResponse(
+      'Failed to create connector',
+      'CREATE_ERROR',
+      500,
+      { details: error.message }
     )
   }
 }

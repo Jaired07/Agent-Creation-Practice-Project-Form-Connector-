@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
 import { supabase } from '@/lib/supabase'
+import { requireAuth } from '@/lib/auth'
+import { createErrorResponse, createNotFoundError } from '@/lib/apiErrors'
 
 /**
  * GET single connector
@@ -17,15 +18,11 @@ import { supabase } from '@/lib/supabase'
 export async function GET(request, { params }) {
   try {
     // Get authenticated user ID
-    const { userId } = await auth()
-    
-    if (!userId) {
-      console.log('🔒 Unauthorized: No user ID found')
-      return NextResponse.json(
-        { data: null, error: 'Unauthorized' },
-        { status: 401 }
-      )
+    const authResult = await requireAuth()
+    if (!('userId' in authResult)) {
+      return authResult // Return unauthorized error response
     }
+    const { userId } = authResult
 
     const { id } = await params
 
@@ -42,10 +39,7 @@ export async function GET(request, { params }) {
       if (error.code === 'PGRST116') {
         // No rows returned (connector not found or not owned by user)
         console.log(`❌ Connector ${id} not found or not owned by user ${userId}`)
-        return NextResponse.json(
-          { data: null, error: 'Connector not found' },
-          { status: 404 }
-        )
+        return createNotFoundError('Connector')
       }
       throw error
     }
@@ -54,9 +48,11 @@ export async function GET(request, { params }) {
     return NextResponse.json({ data, error: null })
   } catch (error) {
     console.error('❌ GET connector error:', error)
-    return NextResponse.json(
-      { data: null, error: error.message },
-      { status: 500 }
+    return createErrorResponse(
+      'Failed to fetch connector',
+      'FETCH_ERROR',
+      500,
+      { details: error.message }
     )
   }
 }
@@ -76,15 +72,11 @@ export async function GET(request, { params }) {
 export async function PUT(request, { params }) {
   try {
     // Get authenticated user ID
-    const { userId } = await auth()
-    
-    if (!userId) {
-      console.log('🔒 Unauthorized: No user ID found')
-      return NextResponse.json(
-        { data: null, error: 'Unauthorized' },
-        { status: 401 }
-      )
+    const authResult = await requireAuth()
+    if (!('userId' in authResult)) {
+      return authResult // Return unauthorized error response
     }
+    const { userId } = authResult
 
     const { id } = await params
     const body = await request.json()
@@ -102,10 +94,7 @@ export async function PUT(request, { params }) {
 
     if (checkError || !existingConnector) {
       console.log(`❌ Connector ${id} not found or not owned by user ${userId}`)
-      return NextResponse.json(
-        { data: null, error: 'Connector not found' },
-        { status: 404 }
-      )
+      return createNotFoundError('Connector')
     }
 
     const updateData = {}
@@ -129,9 +118,11 @@ export async function PUT(request, { params }) {
     return NextResponse.json({ data, error: null })
   } catch (error) {
     console.error('❌ PUT connector error:', error)
-    return NextResponse.json(
-      { data: null, error: error.message },
-      { status: 500 }
+    return createErrorResponse(
+      'Failed to update connector',
+      'UPDATE_ERROR',
+      500,
+      { details: error.message }
     )
   }
 }
@@ -151,15 +142,11 @@ export async function PUT(request, { params }) {
 export async function DELETE(request, { params }) {
   try {
     // Get authenticated user ID
-    const { userId } = await auth()
-    
-    if (!userId) {
-      console.log('🔒 Unauthorized: No user ID found')
-      return NextResponse.json(
-        { data: null, error: 'Unauthorized' },
-        { status: 401 }
-      )
+    const authResult = await requireAuth()
+    if (!('userId' in authResult)) {
+      return authResult // Return unauthorized error response
     }
+    const { userId } = authResult
 
     const { id } = await params
 
@@ -175,10 +162,7 @@ export async function DELETE(request, { params }) {
 
     if (checkError || !existingConnector) {
       console.log(`❌ Connector ${id} not found or not owned by user ${userId}`)
-      return NextResponse.json(
-        { data: null, error: 'Connector not found' },
-        { status: 404 }
-      )
+      return createNotFoundError('Connector')
     }
 
     const { error } = await supabase
@@ -193,9 +177,11 @@ export async function DELETE(request, { params }) {
     return NextResponse.json({ data: { success: true }, error: null })
   } catch (error) {
     console.error('❌ DELETE connector error:', error)
-    return NextResponse.json(
-      { data: null, error: error.message },
-      { status: 500 }
+    return createErrorResponse(
+      'Failed to delete connector',
+      'DELETE_ERROR',
+      500,
+      { details: error.message }
     )
   }
 }

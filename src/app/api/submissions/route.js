@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
 import { supabase } from '@/lib/supabase'
+import { requireAuth } from '@/lib/auth'
+import { createErrorResponse, createNotFoundError, createValidationError } from '@/lib/apiErrors'
 
 /**
  * GET submissions for a connector
@@ -17,24 +18,17 @@ import { supabase } from '@/lib/supabase'
 export async function GET(request) {
   try {
     // Get authenticated user ID
-    const { userId } = await auth()
-    
-    if (!userId) {
-      console.log('🔒 Unauthorized: No user ID found')
-      return NextResponse.json(
-        { data: [], error: 'Unauthorized' },
-        { status: 401 }
-      )
+    const authResult = await requireAuth()
+    if (!('userId' in authResult)) {
+      return authResult // Return unauthorized error response
     }
+    const { userId } = authResult
 
     const { searchParams } = new URL(request.url)
     const connectorId = searchParams.get('connectorId')
 
     if (!connectorId) {
-      return NextResponse.json(
-        { data: [], error: 'connectorId query parameter is required' },
-        { status: 400 }
-      )
+      return createValidationError('connectorId query parameter is required', 'connectorId')
     }
 
     console.log(`📊 Fetching submissions for connector ${connectorId} (user: ${userId})`)
@@ -49,10 +43,7 @@ export async function GET(request) {
 
     if (connectorError || !connector) {
       console.log(`❌ Connector ${connectorId} not found or not owned by user ${userId}`)
-      return NextResponse.json(
-        { data: [], error: 'Connector not found' },
-        { status: 404 }
-      )
+      return createNotFoundError('Connector')
     }
 
     // Fetch submissions for this connector
@@ -75,9 +66,11 @@ export async function GET(request) {
     })
   } catch (error) {
     console.error('❌ GET submissions error:', error)
-    return NextResponse.json(
-      { data: [], error: error.message },
-      { status: 500 }
+    return createErrorResponse(
+      'Failed to fetch submissions',
+      'FETCH_ERROR',
+      500,
+      { details: error.message }
     )
   }
 }
